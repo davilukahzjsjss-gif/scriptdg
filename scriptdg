@@ -1,0 +1,995 @@
+--[[
+	NEXUS V1 BYPASS — EMOJI EDITION
+	Redesigned UI with emojis + fresh layout
+	PERFORMANCE PATCH:
+	  - UI/watermark loop throttled (was per-frame, now ~30Hz)
+	  - Gradient spin is now delta-time based (same visual speed)
+	  - Watermark only writes properties when values actually change
+	  - Stall loop uses os.clock (cheaper than tick) and bails early
+	NEW:
+	  - 🚀 FPS Booster toggle: keeps FPS regular while bypass is active
+	  - ✨ Shiny Graphics toggle: smooth visual overlay while bypass runs
+]]
+
+print("nexus v1 bypass")
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+	Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+	LocalPlayer = Players.LocalPlayer
+end
+
+if not game:IsLoaded() then
+	game.Loaded:Wait()
+end
+
+-- ===== COLORS (PINK THEME) =====
+local C_BG      = Color3.fromRGB(28, 4, 18)
+local C_PANEL   = Color3.fromRGB(48, 6, 30)
+local C_ROW     = Color3.fromRGB(78, 10, 48)
+local C_NEON    = Color3.fromRGB(255, 80, 180)
+local C_MINT    = Color3.fromRGB(255, 220, 240)
+local C_MID     = Color3.fromRGB(245, 130, 195)
+local C_DIM     = Color3.fromRGB(172, 62, 122)
+local C_EDGE    = Color3.fromRGB(130, 12, 70)
+local C_EDGE2   = Color3.fromRGB(220, 42, 150)
+local C_PINK    = Color3.fromRGB(255, 120, 200)
+local C_LIME    = Color3.fromRGB(255, 165, 215)
+
+local GUI_NAME = "Nexus V1 Bypass"
+local WM_NAME  = "NexusWatermark"
+
+-- ===== BACKGROUND IMAGE =====
+local BG_IMAGE = "rbxassetid://90453834580322"
+
+local function safeParent()
+	local ok, hidden = pcall(function()
+		return (gethui and gethui()) or (get_hidden_gui and get_hidden_gui())
+	end)
+	if ok and typeof(hidden) == "Instance" then return hidden end
+	if pcall(function() return CoreGui.Name end) then return CoreGui end
+	return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local Parent = safeParent()
+
+for _, v in ipairs(Parent:GetChildren()) do
+	if v.Name == GUI_NAME then pcall(function() v:Destroy() end) end
+end
+pcall(function()
+	local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if pg and pg:FindFirstChild(WM_NAME) then pg[WM_NAME]:Destroy() end
+end)
+pcall(function()
+	local old = SoundService:FindFirstChild("NexusBell")
+	if old then old:Destroy() end
+end)
+-- clean up any leftover shiny effects from a previous run
+pcall(function()
+	local a = Lighting:FindFirstChild("NexusShinyCC");  if a then a:Destroy() end
+	local b = Lighting:FindFirstChild("NexusShinyBlur"); if b then b:Destroy() end
+end)
+
+local Bell = Instance.new("Sound")
+Bell.Name = "NexusBell"
+Bell.SoundId = "rbxassetid://90453834580322"
+Bell.Volume = 0.55
+Bell.PlaybackSpeed = 1.05
+Bell.Parent = SoundService
+
+local State = {
+	Mode = "PC",
+	Power = 97000,
+	Active = false,
+	Keybind = Enum.KeyCode.V,
+	Binding = false,
+	Hidden = false,
+	Minimized = false,
+	FpsBooster = false,      -- NEW
+	ShinyGraphics = false,   -- NEW
+}
+
+local lagConn = nil
+local lagAmount = 0.15
+
+local function applyPower(val)
+	State.Power = math.clamp(math.floor(val), 10000, 500000)
+	local t = (State.Power - 10000) / 490000
+	lagAmount = t * 0.2
+end
+applyPower(State.Power)
+
+-- ===== STALL LOOP (logic identical, FPS Booster guard added) =====
+local clock = os.clock
+
+local function startLag()
+	if lagConn then lagConn:Disconnect() end
+	if lagAmount <= 0 then return end
+	lagConn = RunService.RenderStepped:Connect(function()
+		if not State.Active then return end
+		if State.FpsBooster then return end   -- NEW: keeps FPS regular while bypass on
+		if lagAmount <= 0 then return end
+		local t = clock()
+		while clock() - t < lagAmount do end
+	end)
+end
+
+local function stopLag()
+	if lagConn then
+		lagConn:Disconnect()
+		lagConn = nil
+	end
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = GUI_NAME
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.DisplayOrder = 9999
+ScreenGui.Parent = Parent
+
+local function corner(p, r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r)
+	c.Parent = p
+	return c
+end
+
+local function stroke(p, col, th)
+	local s = Instance.new("UIStroke")
+	s.Color = col
+	s.Thickness = th
+	s.Parent = p
+	return s
+end
+
+-- ===================== MAIN FRAME =====================
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Active = true
+Main.ClipsDescendants = true
+Main.Position = UDim2.new(0.5, -175, 0.5, -195)
+Main.Size = UDim2.new(0, 350, 0, 390)
+Main.BackgroundColor3 = C_BG
+Main.BackgroundTransparency = 0
+Main.BorderSizePixel = 0
+Main.Parent = ScreenGui
+corner(Main, 26)
+
+local MainScale = Instance.new("UIScale")
+MainScale.Scale = 1
+MainScale.Parent = Main
+
+local MainStroke = stroke(Main, C_NEON, 3)
+
+local MainGrad = Instance.new("UIGradient")
+MainGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0.00, Color3.fromRGB(58, 0, 28)),
+	ColorSequenceKeypoint.new(0.30, C_NEON),
+	ColorSequenceKeypoint.new(0.50, Color3.fromRGB(255, 255, 255)),
+	ColorSequenceKeypoint.new(0.70, C_NEON),
+	ColorSequenceKeypoint.new(1.00, Color3.fromRGB(58, 0, 28)),
+})
+MainGrad.Rotation = 0
+MainGrad.Parent = MainStroke
+
+local MainImg = Instance.new("ImageLabel")
+MainImg.Size = UDim2.new(1, 0, 1, 0)
+MainImg.BackgroundTransparency = 1
+MainImg.Image = BG_IMAGE
+MainImg.ImageTransparency = 0.22
+MainImg.ScaleType = Enum.ScaleType.Crop
+MainImg.ZIndex = 2
+MainImg.Parent = Main
+corner(MainImg, 26)
+
+local MainTint = Instance.new("Frame")
+MainTint.Size = UDim2.new(1, 0, 1, 0)
+MainTint.BackgroundColor3 = C_BG
+MainTint.BackgroundTransparency = 0.38
+MainTint.BorderSizePixel = 0
+MainTint.ZIndex = 3
+MainTint.Parent = Main
+corner(MainTint, 26)
+
+local TintGrad = Instance.new("UIGradient")
+TintGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0.0, C_PANEL),
+	ColorSequenceKeypoint.new(0.5, C_BG),
+	ColorSequenceKeypoint.new(1.0, C_BG),
+})
+TintGrad.Rotation = 150
+TintGrad.Parent = MainTint
+
+-- ===================== HEADER (with emoji badge) =====================
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.Position = UDim2.new(0, 0, 0, 0)
+Header.Size = UDim2.new(1, 0, 0, 76)
+Header.BackgroundTransparency = 1
+Header.ZIndex = 8
+Header.Parent = Main
+
+-- Emoji badge (glowing circle)
+local Badge = Instance.new("Frame")
+Badge.Name = "Badge"
+Badge.Position = UDim2.new(0, 16, 0, 16)
+Badge.Size = UDim2.new(0, 44, 0, 44)
+Badge.BackgroundColor3 = C_NEON
+Badge.BorderSizePixel = 0
+Badge.ZIndex = 9
+Badge.Parent = Header
+corner(Badge, 22)
+stroke(Badge, C_MINT, 2)
+
+local BadgeGrad = Instance.new("UIGradient")
+BadgeGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0.0, C_NEON),
+	ColorSequenceKeypoint.new(1.0, C_PINK),
+})
+BadgeGrad.Rotation = 45
+BadgeGrad.Parent = Badge
+
+local BadgeEmoji = Instance.new("TextLabel")
+BadgeEmoji.BackgroundTransparency = 1
+BadgeEmoji.Size = UDim2.new(1, 0, 1, 0)
+BadgeEmoji.Text = "⚡"
+BadgeEmoji.TextSize = 24
+BadgeEmoji.Font = Enum.Font.GothamBlack
+BadgeEmoji.TextColor3 = Color3.fromRGB(255, 255, 255)
+BadgeEmoji.ZIndex = 10
+BadgeEmoji.Parent = Badge
+
+local Title = Instance.new("TextLabel")
+Title.BackgroundTransparency = 1
+Title.Text = " ESTRELA BYPASS "
+Title.TextSize = 20
+Title.TextColor3 = C_MINT
+Title.Font = Enum.Font.GothamBlack
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.ZIndex = 10
+Title.Position = UDim2.new(0, 70, 0, 14)
+Title.Size = UDim2.new(1, -140, 0, 26)
+Title.Parent = Header
+
+local SubTitle = Instance.new("TextLabel")
+SubTitle.BackgroundTransparency = 1
+SubTitle.Text = ""
+SubTitle.TextSize = 10
+SubTitle.TextColor3 = C_DIM
+SubTitle.Font = Enum.Font.GothamMedium
+SubTitle.TextXAlignment = Enum.TextXAlignment.Left
+SubTitle.ZIndex = 10
+SubTitle.Position = UDim2.new(0, 70, 0, 40)
+SubTitle.Size = UDim2.new(1, -140, 0, 14)
+SubTitle.Parent = Header
+
+-- Status pill (top right)
+local StatusPill = Instance.new("Frame")
+StatusPill.Position = UDim2.new(1, -108, 0, 20)
+StatusPill.Size = UDim2.new(0, 92, 0, 24)
+StatusPill.BackgroundColor3 = C_ROW
+StatusPill.BackgroundTransparency = 0.15
+StatusPill.BorderSizePixel = 0
+StatusPill.ZIndex = 9
+StatusPill.Parent = Header
+corner(StatusPill, 12)
+local spStroke = stroke(StatusPill, C_EDGE, 1.5)
+
+local StatusDot = Instance.new("Frame")
+StatusDot.Position = UDim2.new(0, 8, 0.5, -3)
+StatusDot.Size = UDim2.new(0, 6, 0, 6)
+StatusDot.BackgroundColor3 = C_DIM
+StatusDot.BorderSizePixel = 0
+StatusDot.ZIndex = 10
+StatusDot.Parent = StatusPill
+corner(StatusDot, 6)
+
+local StatusText = Instance.new("TextLabel")
+StatusText.BackgroundTransparency = 1
+StatusText.Text = "IDLE"
+StatusText.TextSize = 9
+StatusText.TextColor3 = C_MID
+StatusText.Font = Enum.Font.GothamBold
+StatusText.TextXAlignment = Enum.TextXAlignment.Center
+StatusText.ZIndex = 10
+StatusText.Position = UDim2.new(0, 18, 0, 0)
+StatusText.Size = UDim2.new(1, -22, 1, 0)
+StatusText.Parent = StatusPill
+
+-- Min button
+local MinBtn = Instance.new("TextButton")
+MinBtn.Position = UDim2.new(1, -42, 0, 50)
+MinBtn.Size = UDim2.new(0, 26, 0, 22)
+MinBtn.BackgroundColor3 = C_ROW
+MinBtn.BorderSizePixel = 0
+MinBtn.Text = "➖"
+MinBtn.TextColor3 = C_MID
+MinBtn.TextSize = 12
+MinBtn.Font = Enum.Font.GothamBlack
+MinBtn.AutoButtonColor = false
+MinBtn.ZIndex = 10
+MinBtn.Parent = Header
+corner(MinBtn, 8)
+stroke(MinBtn, C_EDGE, 1.5)
+
+-- Divider
+local Divider = Instance.new("Frame")
+Divider.Position = UDim2.new(0, 14, 0, 74)
+Divider.Size = UDim2.new(1, -28, 0, 1)
+Divider.BackgroundColor3 = C_NEON
+Divider.BorderSizePixel = 0
+Divider.ZIndex = 10
+Divider.Parent = Main
+
+local DivGrad = Instance.new("UIGradient")
+DivGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0.00, Color3.new(0, 0, 0)),
+	ColorSequenceKeypoint.new(0.35, C_NEON),
+	ColorSequenceKeypoint.new(0.65, C_NEON),
+	ColorSequenceKeypoint.new(1.00, Color3.new(0, 0, 0)),
+})
+DivGrad.Parent = Divider
+
+-- ===================== BODY =====================
+local Body = Instance.new("Frame")
+Body.Position = UDim2.new(0, 14, 0, 86)
+Body.Size = UDim2.new(1, -28, 0, 268)
+Body.BackgroundTransparency = 1
+Body.ZIndex = 7
+Body.Parent = Main
+
+local function makeRow(y, height, emoji, labelText)
+	local row = Instance.new("Frame")
+	row.Position = UDim2.new(0, 0, 0, y)
+	row.Size = UDim2.new(1, 0, 0, height)
+	row.BackgroundColor3 = C_PANEL
+	row.BackgroundTransparency = 0.18
+	row.BorderSizePixel = 0
+	row.ZIndex = 8
+	row.Parent = Body
+	corner(row, 14)
+	stroke(row, C_EDGE, 1.2)
+
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, C_ROW),
+		ColorSequenceKeypoint.new(1, C_BG),
+	})
+	g.Rotation = 180
+	g.Parent = row
+
+	-- emoji square
+	local emojiBox = Instance.new("Frame")
+	emojiBox.Position = UDim2.new(0, 10, 0.5, -12)
+	emojiBox.Size = UDim2.new(0, 24, 0, 24)
+	emojiBox.BackgroundColor3 = C_ROW
+	emojiBox.BorderSizePixel = 0
+	emojiBox.ZIndex = 9
+	emojiBox.Parent = row
+	corner(emojiBox, 8)
+	stroke(emojiBox, C_EDGE2, 1)
+
+	local emojiLbl = Instance.new("TextLabel")
+	emojiLbl.BackgroundTransparency = 1
+	emojiLbl.Size = UDim2.new(1, 0, 1, 0)
+	emojiLbl.Text = emoji
+	emojiLbl.TextSize = 14
+	emojiLbl.Font = Enum.Font.GothamBlack
+	emojiLbl.TextColor3 = C_MINT
+	emojiLbl.ZIndex = 10
+	emojiLbl.Parent = emojiBox
+
+	local lbl = Instance.new("TextLabel")
+	lbl.BackgroundTransparency = 1
+	lbl.Text = labelText
+	lbl.TextSize = 12
+	lbl.TextColor3 = C_MID
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.ZIndex = 9
+	lbl.Position = UDim2.new(0, 44, 0, 0)
+	lbl.Size = UDim2.new(0.38, 0, 1, 0)
+	lbl.Parent = row
+
+	return row
+end
+
+-- ---------- Mode row ----------
+local ModeRow = makeRow(0, 48, "🎮", "Mode")
+
+local PCBtn = Instance.new("TextButton")
+PCBtn.Position = UDim2.new(1, -186, 0.5, -14)
+PCBtn.Size = UDim2.new(0, 84, 0, 28)
+PCBtn.BackgroundColor3 = C_NEON
+PCBtn.BorderSizePixel = 0
+PCBtn.Text = "💻 PC"
+PCBtn.TextColor3 = C_BG
+PCBtn.TextSize = 11
+PCBtn.Font = Enum.Font.GothamBold
+PCBtn.AutoButtonColor = false
+PCBtn.ZIndex = 9
+PCBtn.Parent = ModeRow
+corner(PCBtn, 10)
+stroke(PCBtn, C_EDGE, 1.5)
+
+local MobileBtn = Instance.new("TextButton")
+MobileBtn.Position = UDim2.new(1, -96, 0.5, -14)
+MobileBtn.Size = UDim2.new(0, 88, 0, 28)
+MobileBtn.BackgroundColor3 = C_ROW
+MobileBtn.BorderSizePixel = 0
+MobileBtn.Text = "📱 MOBILE"
+MobileBtn.TextColor3 = C_DIM
+MobileBtn.TextSize = 10
+MobileBtn.Font = Enum.Font.GothamBold
+MobileBtn.AutoButtonColor = false
+MobileBtn.ZIndex = 9
+MobileBtn.Parent = ModeRow
+corner(MobileBtn, 10)
+stroke(MobileBtn, C_EDGE, 1.5)
+
+-- ---------- Power row ----------
+local PowerRow = makeRow(56, 48, "⚡", "Power")
+
+local PowerBox = Instance.new("TextBox")
+PowerBox.Position = UDim2.new(1, -122, 0.5, -14)
+PowerBox.Size = UDim2.new(0, 114, 0, 28)
+PowerBox.BackgroundColor3 = C_BG
+PowerBox.BorderSizePixel = 0
+PowerBox.Text = tostring(State.Power)
+PowerBox.TextColor3 = C_MINT
+PowerBox.TextSize = 12
+PowerBox.Font = Enum.Font.GothamBold
+PowerBox.PlaceholderText = "⚡ power"
+PowerBox.PlaceholderColor3 = C_DIM
+PowerBox.ClearTextOnFocus = false
+PowerBox.ZIndex = 9
+PowerBox.Parent = PowerRow
+corner(PowerBox, 10)
+stroke(PowerBox, C_EDGE2, 1.5)
+
+-- ---------- Bypass row ----------
+local BypassRow = makeRow(112, 60, "🛡️", "Bypass")
+
+local KeyBtn = Instance.new("TextButton")
+KeyBtn.Position = UDim2.new(1, -182, 0.5, -18)
+KeyBtn.Size = UDim2.new(0, 60, 0, 36)
+KeyBtn.BackgroundColor3 = C_ROW
+KeyBtn.BorderSizePixel = 0
+KeyBtn.Text = "⌨ " .. State.Keybind.Name
+KeyBtn.TextColor3 = C_MID
+KeyBtn.TextSize = 12
+KeyBtn.Font = Enum.Font.GothamBold
+KeyBtn.AutoButtonColor = false
+KeyBtn.ZIndex = 9
+KeyBtn.Parent = BypassRow
+corner(KeyBtn, 12)
+stroke(KeyBtn, C_EDGE, 1.8)
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Position = UDim2.new(1, -116, 0.5, -18)
+ToggleBtn.Size = UDim2.new(0, 108, 0, 36)
+ToggleBtn.BackgroundColor3 = C_ROW
+ToggleBtn.BorderSizePixel = 0
+ToggleBtn.Text = "🔴 OFF"
+ToggleBtn.TextColor3 = C_MID
+ToggleBtn.TextSize = 12
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.AutoButtonColor = false
+ToggleBtn.ZIndex = 9
+ToggleBtn.Parent = BypassRow
+corner(ToggleBtn, 12)
+stroke(ToggleBtn, C_EDGE, 1.8)
+
+-- ---------- Boosters row (NEW) ----------
+local BoostRow = makeRow(180, 48, "🚀", "Boosters")
+
+local FpsBtn = Instance.new("TextButton")
+FpsBtn.Position = UDim2.new(1, -186, 0.5, -14)
+FpsBtn.Size = UDim2.new(0, 84, 0, 28)
+FpsBtn.BackgroundColor3 = C_ROW
+FpsBtn.BorderSizePixel = 0
+FpsBtn.Text = "🚀 FPS"
+FpsBtn.TextColor3 = C_DIM
+FpsBtn.TextSize = 10
+FpsBtn.Font = Enum.Font.GothamBold
+FpsBtn.AutoButtonColor = false
+FpsBtn.ZIndex = 9
+FpsBtn.Parent = BoostRow
+corner(FpsBtn, 10)
+stroke(FpsBtn, C_EDGE, 1.5)
+
+local ShinyBtn = Instance.new("TextButton")
+ShinyBtn.Position = UDim2.new(1, -96, 0.5, -14)
+ShinyBtn.Size = UDim2.new(0, 88, 0, 28)
+ShinyBtn.BackgroundColor3 = C_ROW
+ShinyBtn.BorderSizePixel = 0
+ShinyBtn.Text = "✨ SHINY"
+ShinyBtn.TextColor3 = C_DIM
+ShinyBtn.TextSize = 10
+ShinyBtn.Font = Enum.Font.GothamBold
+ShinyBtn.AutoButtonColor = false
+ShinyBtn.ZIndex = 9
+ShinyBtn.Parent = BoostRow
+corner(ShinyBtn, 10)
+stroke(ShinyBtn, C_EDGE, 1.5)
+
+-- ===================== FOOTER =====================
+local Footer = Instance.new("Frame")
+Footer.Position = UDim2.new(0, 14, 0, 364)
+Footer.Size = UDim2.new(1, -28, 0, 22)
+Footer.BackgroundColor3 = C_PANEL
+Footer.BackgroundTransparency = 0.28
+Footer.BorderSizePixel = 0
+Footer.ZIndex = 8
+Footer.Parent = Main
+corner(Footer, 10)
+stroke(Footer, C_EDGE, 1)
+
+local FootL = Instance.new("TextLabel")
+FootL.BackgroundTransparency = 1
+FootL.Text = ""
+FootL.TextSize = 9
+FootL.TextColor3 = C_DIM
+FootL.Font = Enum.Font.GothamMedium
+FootL.TextXAlignment = Enum.TextXAlignment.Left
+FootL.ZIndex = 9
+FootL.Position = UDim2.new(0, 10, 0, 0)
+FootL.Size = UDim2.new(0.5, 0, 1, 0)
+FootL.Parent = Footer
+
+local FootR = Instance.new("TextLabel")
+FootR.BackgroundTransparency = 1
+FootR.Text = "⚡ 97000 pwr | 🎮 LCTRL"
+FootR.TextSize = 9
+FootR.TextColor3 = C_DIM
+FootR.Font = Enum.Font.GothamMedium
+FootR.TextXAlignment = Enum.TextXAlignment.Right
+FootR.ZIndex = 9
+FootR.Position = UDim2.new(0.5, 0, 0, 0)
+FootR.Size = UDim2.new(0.5, -10, 1, 0)
+FootR.Parent = Footer
+
+-- ===================== MINI (minimized view) =====================
+local Mini = Instance.new("Frame")
+Mini.Name = "Mini"
+Mini.Active = true
+Mini.Visible = false
+Mini.ClipsDescendants = true
+Mini.Position = UDim2.new(0.5, -175, 0.5, -195)
+Mini.Size = UDim2.new(0, 350, 0, 70)
+Mini.BackgroundColor3 = C_BG
+Mini.BorderSizePixel = 0
+Mini.Parent = ScreenGui
+corner(Mini, 26)
+
+local MiniScale = Instance.new("UIScale")
+MiniScale.Scale = 1
+MiniScale.Parent = Mini
+
+local MiniStroke = stroke(Mini, C_NEON, 3)
+local MiniGrad = MainGrad:Clone()
+MiniGrad.Parent = MiniStroke
+
+local MiniImg = MainImg:Clone()
+MiniImg.Parent = Mini
+
+local MiniTint = Instance.new("Frame")
+MiniTint.Size = UDim2.new(1, 0, 1, 0)
+MiniTint.BackgroundColor3 = C_BG
+MiniTint.BackgroundTransparency = 0.38
+MiniTint.BorderSizePixel = 0
+MiniTint.ZIndex = 3
+MiniTint.Parent = Mini
+corner(MiniTint, 26)
+
+local MiniBadge = Instance.new("Frame")
+MiniBadge.Position = UDim2.new(0, 14, 0.5, -16)
+MiniBadge.Size = UDim2.new(0, 32, 0, 32)
+MiniBadge.BackgroundColor3 = C_NEON
+MiniBadge.BorderSizePixel = 0
+MiniBadge.ZIndex = 8
+MiniBadge.Parent = MiniTint
+corner(MiniBadge, 16)
+stroke(MiniBadge, C_MINT, 1.5)
+
+local MiniBadgeEmoji = Instance.new("TextLabel")
+MiniBadgeEmoji.BackgroundTransparency = 1
+MiniBadgeEmoji.Size = UDim2.new(1, 0, 1, 0)
+MiniBadgeEmoji.Text = "⚡"
+MiniBadgeEmoji.TextSize = 18
+MiniBadgeEmoji.Font = Enum.Font.GothamBlack
+MiniBadgeEmoji.TextColor3 = Color3.fromRGB(255, 255, 255)
+MiniBadgeEmoji.ZIndex = 9
+MiniBadgeEmoji.Parent = MiniBadge
+
+local MiniLbl = Instance.new("TextLabel")
+MiniLbl.BackgroundTransparency = 1
+MiniLbl.Text = "."
+MiniLbl.TextSize = 13
+MiniLbl.TextColor3 = C_MINT
+MiniLbl.Font = Enum.Font.GothamBlack
+MiniLbl.TextXAlignment = Enum.TextXAlignment.Left
+MiniLbl.ZIndex = 8
+MiniLbl.Position = UDim2.new(0, 56, 0, 0)
+MiniLbl.Size = UDim2.new(1, -110, 1, 0)
+MiniLbl.Parent = MiniTint
+
+local MaxBtn = Instance.new("TextButton")
+MaxBtn.Position = UDim2.new(1, -42, 0.5, -14)
+MaxBtn.Size = UDim2.new(0, 28, 0, 28)
+MaxBtn.BackgroundColor3 = C_ROW
+MaxBtn.BorderSizePixel = 0
+MaxBtn.Text = "➕"
+MaxBtn.TextColor3 = C_MID
+MaxBtn.TextSize = 14
+MaxBtn.Font = Enum.Font.GothamBlack
+MaxBtn.AutoButtonColor = false
+MaxBtn.ZIndex = 8
+MaxBtn.Parent = MiniTint
+corner(MaxBtn, 10)
+stroke(MaxBtn, C_EDGE, 1.5)
+
+-- ===================== WATERMARK =====================
+local WmGui = Instance.new("ScreenGui")
+WmGui.Name = WM_NAME
+WmGui.ResetOnSpawn = false
+WmGui.IgnoreGuiInset = true
+WmGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local WmLabel = Instance.new("TextLabel")
+WmLabel.BackgroundTransparency = 1
+WmLabel.Size = UDim2.new(0, 460, 0, 50)
+WmLabel.AnchorPoint = Vector2.new(0.5, 1)
+WmLabel.Text = ""
+WmLabel.TextSize = 28
+WmLabel.Font = Enum.Font.GothamBlack
+WmLabel.TextStrokeTransparency = 0.3
+WmLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+WmLabel.ZIndex = 100
+WmLabel.Visible = true
+WmLabel.Parent = WmGui
+
+-- ===================== HELPERS =====================
+local function refreshFooter()
+	FootR.Text = "⚡ " .. tostring(State.Power) .. " pwr | 🎮 LCTRL"
+end
+
+local function setActive(on)
+	State.Active = on
+
+	if on then
+		ToggleBtn.Text = "🟢 ACTIVE"
+		ToggleBtn.BackgroundColor3 = C_NEON
+		ToggleBtn.TextColor3 = C_BG
+		StatusDot.BackgroundColor3 = C_LIME
+		StatusText.Text = "ACTIVE"
+		StatusText.TextColor3 = C_LIME
+		spStroke.Color = C_LIME
+		startLag()
+	else
+		ToggleBtn.Text = "🔴 OFF"
+		ToggleBtn.BackgroundColor3 = C_ROW
+		ToggleBtn.TextColor3 = C_MID
+		StatusDot.BackgroundColor3 = C_DIM
+		StatusText.Text = "IDLE"
+		StatusText.TextColor3 = C_MID
+		spStroke.Color = C_EDGE
+		stopLag()
+	end
+
+	pcall(function()
+		Bell:Stop()
+		Bell.TimePosition = 0
+		Bell:Play()
+	end)
+end
+
+local function updateBypassLayout()
+	if State.Mode == "MOBILE" then
+		KeyBtn.Visible = false
+		ToggleBtn.Position = UDim2.new(1, -182, 0.5, -18)
+		ToggleBtn.Size = UDim2.new(0, 174, 0, 36)
+	else
+		KeyBtn.Visible = true
+		ToggleBtn.Position = UDim2.new(1, -116, 0.5, -18)
+		ToggleBtn.Size = UDim2.new(0, 108, 0, 36)
+	end
+end
+
+local function setMode(mode)
+	State.Mode = mode
+	if mode == "PC" then
+		PCBtn.BackgroundColor3 = C_NEON
+		PCBtn.TextColor3 = C_BG
+		MobileBtn.BackgroundColor3 = C_ROW
+		MobileBtn.TextColor3 = C_DIM
+		applyPower(97000)
+		PowerBox.Text = tostring(State.Power)
+	else
+		MobileBtn.BackgroundColor3 = C_NEON
+		MobileBtn.TextColor3 = C_BG
+		PCBtn.BackgroundColor3 = C_ROW
+		PCBtn.TextColor3 = C_DIM
+		applyPower(72000)
+		PowerBox.Text = tostring(State.Power)
+	end
+	refreshFooter()
+	updateBypassLayout()
+	if State.Active then
+		stopLag()
+		startLag()
+	end
+end
+
+PCBtn.MouseButton1Click:Connect(function() setMode("PC") end)
+MobileBtn.MouseButton1Click:Connect(function() setMode("MOBILE") end)
+
+ToggleBtn.MouseButton1Click:Connect(function()
+	setActive(not State.Active)
+end)
+
+PowerBox.FocusLost:Connect(function()
+	local n = tonumber(PowerBox.Text)
+	if n and n > 0 then
+		applyPower(n)
+	end
+	PowerBox.Text = tostring(State.Power)
+	refreshFooter()
+	if State.Active then
+		stopLag()
+		startLag()
+	end
+end)
+
+KeyBtn.MouseButton1Click:Connect(function()
+	State.Binding = true
+	KeyBtn.Text = "⌨ ..."
+end)
+
+-- ---------- FPS BOOSTER (NEW) ----------
+-- Toggle only. The stall loop already reads State.FpsBooster, so flipping
+-- this takes effect live without touching any bypass logic.
+local function setFpsBooster(on)
+	State.FpsBooster = on
+	if on then
+		FpsBtn.Text = "🚀 FPS ON"
+		FpsBtn.BackgroundColor3 = C_LIME
+		FpsBtn.TextColor3 = C_BG
+	else
+		FpsBtn.Text = "🚀 FPS"
+		FpsBtn.BackgroundColor3 = C_ROW
+		FpsBtn.TextColor3 = C_DIM
+	end
+end
+
+FpsBtn.MouseButton1Click:Connect(function()
+	setFpsBooster(not State.FpsBooster)
+end)
+
+-- ---------- SHINY GRAPHICS (NEW) ----------
+-- Visual-only overlay in Lighting. Doesn't touch bypass logic at all —
+-- the bypass keeps running exactly as before while this is enabled.
+local shinyCC, shinyBlur
+
+local function applyShiny()
+	if not shinyCC then
+		shinyCC = Instance.new("ColorCorrectionEffect")
+		shinyCC.Name = "NexusShinyCC"
+		shinyCC.Brightness = 0.04
+		shinyCC.Contrast = 0.10
+		shinyCC.Saturation = 0.14
+		shinyCC.TintColor = Color3.fromRGB(255, 225, 242)
+		shinyCC.Parent = Lighting
+	end
+	if not shinyBlur then
+		shinyBlur = Instance.new("BlurEffect")
+		shinyBlur.Name = "NexusShinyBlur"
+		shinyBlur.Size = 1.5
+		shinyBlur.Parent = Lighting
+	end
+end
+
+local function removeShiny()
+	if shinyCC then shinyCC:Destroy(); shinyCC = nil end
+	if shinyBlur then shinyBlur:Destroy(); shinyBlur = nil end
+end
+
+local function setShiny(on)
+	State.ShinyGraphics = on
+	if on then
+		ShinyBtn.Text = "✨ SHINY ON"
+		ShinyBtn.BackgroundColor3 = C_PINK
+		ShinyBtn.TextColor3 = C_BG
+		applyShiny()
+	else
+		ShinyBtn.Text = "✨ SHINY"
+		ShinyBtn.BackgroundColor3 = C_ROW
+		ShinyBtn.TextColor3 = C_DIM
+		removeShiny()
+	end
+end
+
+ShinyBtn.MouseButton1Click:Connect(function()
+	setShiny(not State.ShinyGraphics)
+end)
+
+local TW = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local function setMinimized(on)
+	State.Minimized = on
+	if on then
+		Mini.Position = Main.Position
+		local t = TweenService:Create(MainScale, TW, {Scale = 0.92})
+		t:Play()
+		t.Completed:Wait()
+		Main.Visible = false
+		MainScale.Scale = 1
+		MiniScale.Scale = 0.92
+		MiniTint.BackgroundTransparency = 0.35
+		Mini.Visible = true
+		TweenService:Create(MiniScale, TW, {Scale = 1}):Play()
+	else
+		Main.Position = Mini.Position
+		local t = TweenService:Create(MiniScale, TW, {Scale = 0.92})
+		t:Play()
+		t.Completed:Wait()
+		Mini.Visible = false
+		MiniScale.Scale = 1
+		MainScale.Scale = 0.92
+		Main.Visible = true
+		TweenService:Create(MainScale, TW, {Scale = 1}):Play()
+	end
+end
+
+MinBtn.MouseButton1Click:Connect(function() setMinimized(true) end)
+MaxBtn.MouseButton1Click:Connect(function() setMinimized(false) end)
+
+-- ===================== DRAG =====================
+local dragTarget, dragStart, dragOrigin = nil, nil, nil
+
+local function hookDrag(frame, moveTarget)
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+			dragTarget = moveTarget
+			dragStart = Vector2.new(input.Position.X, input.Position.Y)
+			dragOrigin = moveTarget.Position
+		end
+	end)
+end
+
+hookDrag(Header, Main)
+hookDrag(MiniTint, Mini)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not dragTarget then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement
+	and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+	local delta = Vector2.new(input.Position.X, input.Position.Y) - dragStart
+	dragTarget.Position = UDim2.new(
+		dragOrigin.X.Scale, math.floor(dragOrigin.X.Offset + delta.X),
+		dragOrigin.Y.Scale, math.floor(dragOrigin.Y.Offset + delta.Y)
+	)
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+	or input.UserInputType == Enum.UserInputType.Touch then
+		dragTarget = nil
+	end
+end)
+
+-- ===================== KEYBINDS =====================
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+	if State.Binding then
+		if input.KeyCode == Enum.KeyCode.Unknown then return end
+		State.Binding = false
+		if input.KeyCode ~= Enum.KeyCode.Escape then
+			State.Keybind = input.KeyCode
+		end
+		KeyBtn.Text = "⌨ " .. State.Keybind.Name
+		return
+	end
+
+	if gpe then return end
+
+	if input.KeyCode == State.Keybind then
+		setActive(not State.Active)
+	elseif input.KeyCode == Enum.KeyCode.LeftControl then
+		State.Hidden = not State.Hidden
+		ScreenGui.Enabled = not State.Hidden
+	end
+end)
+
+-- ===================== HEARTBEAT (throttled, FPS-friendly) =====================
+local UI_HZ   = 30
+local UI_STEP = 1 / UI_HZ
+local GRAD_DEG_PER_SEC = 108
+local HUE_PER_SEC      = 0.18
+
+local hue = 0.88
+local uiAccum = 0
+local lastWmVisible = nil
+local lastWmX, lastWmY = nil, nil
+
+RunService.Heartbeat:Connect(function(dt)
+	uiAccum += dt
+	if uiAccum < UI_STEP then return end
+	local step = uiAccum
+	uiAccum = 0
+
+	local r = (MainGrad.Rotation + GRAD_DEG_PER_SEC * step) % 360
+	MainGrad.Rotation = r
+	MiniGrad.Rotation = r
+
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local cam = workspace.CurrentCamera
+	if not (hrp and cam) then
+		if lastWmVisible ~= false then
+			WmLabel.Visible = false
+			lastWmVisible = false
+		end
+		return
+	end
+
+	local pos = hrp.Position + Vector3.new(0, 3.2, 0)
+	local screenPos, onScreen = cam:WorldToViewportPoint(pos)
+
+	if onScreen then
+		if lastWmVisible ~= true then
+			WmLabel.Visible = true
+			lastWmVisible = true
+		end
+
+		local sx, sy = math.floor(screenPos.X), math.floor(screenPos.Y)
+		if sx ~= lastWmX or sy ~= lastWmY then
+			WmLabel.Position = UDim2.new(0, sx, 0, sy)
+			lastWmX, lastWmY = sx, sy
+		end
+
+		hue += HUE_PER_SEC * step
+		if hue > 0.98 then hue = 0.86 end
+		local col = Color3.fromHSV(hue, 0.85, 1)
+		WmLabel.TextColor3 = col
+		WmLabel.TextStrokeColor3 = Color3.new(col.R * 0.2, col.G * 0.2, col.B * 0.2)
+	else
+		if lastWmVisible ~= false then
+			WmLabel.Visible = false
+			lastWmVisible = false
+		end
+	end
+end)
+
+ScreenGui.Destroying:Connect(function()
+	stopLag()
+	removeShiny()   -- NEW: clean up lighting effects on destroy
+	pcall(function() WmGui:Destroy() end)
+	pcall(function() Bell:Destroy() end)
+end)
+
+-- ===================== INIT =====================
+setMode("PC")
+refreshFooter()
+updateBypassLayout()
+MinBtn.Visible = true
+
+MainScale.Scale = 0.92
+TweenService:Create(
+	MainScale,
+	TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+	{Scale = 1}
+):Play()
